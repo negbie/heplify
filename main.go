@@ -52,6 +52,8 @@ func parseFlags() {
 	flag.StringVar(&config.Cfg.HepTLSProxy, "hx", "", "HEP TLS proxy address")
 	flag.StringVar(&config.Cfg.HepNodePW, "hp", "myhep", "HepNodePW")
 	flag.UintVar(&config.Cfg.HepNodeID, "hi", 2002, "HepNodeID")
+	flag.StringVar(&config.Cfg.NsqdTCPAddress, "ns", "", "NSQ TCP server address")
+	flag.StringVar(&config.Cfg.NsqdTopic, "nt", "Kamailio-Topic", "NSQ publish topic")
 	flag.Parse()
 
 	config.Cfg.Iface = &ifaceConfig
