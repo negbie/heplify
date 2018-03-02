@@ -6,9 +6,9 @@ import (
 	"net"
 	"os"
 
-	"github.com/coocood/freecache"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/negbie/freecache"
 	"github.com/negbie/heplify/config"
 	"github.com/negbie/heplify/ip4defrag"
 	"github.com/negbie/heplify/logp"
@@ -17,7 +17,8 @@ import (
 
 type Decoder struct {
 	Host          string
-	Node          uint32
+	NodeID        uint32
+	NodePW        []byte
 	LayerType     gopacket.LayerType
 	defragger     *ip4defrag.IPv4Defragmenter
 	fragCount     int
@@ -41,13 +42,14 @@ type Decoder struct {
 
 type Packet struct {
 	Host          string
-	Node          uint32
+	NodeID        uint32
+	NodePW        []byte
 	Tsec          uint32
 	Tmsec         uint32
 	Vlan          uint16
-	Version       uint8
-	Protocol      uint8
-	ProtoType     uint8
+	Version       byte
+	Protocol      byte
+	ProtoType     byte
 	SrcIP         net.IP
 	DstIP         net.IP
 	SrcPort       uint16
@@ -79,7 +81,8 @@ func NewDecoder(datalink layers.LinkType) *Decoder {
 
 	d := &Decoder{
 		Host:      host,
-		Node:      uint32(config.Cfg.HepNodeID),
+		NodeID:    uint32(config.Cfg.HepNodeID),
+		NodePW:    []byte(config.Cfg.HepNodePW),
 		LayerType: lt,
 		defragger: ip4defrag.NewIPv4Defragmenter(),
 		SIPCache:  cSIP,
@@ -93,10 +96,11 @@ func NewDecoder(datalink layers.LinkType) *Decoder {
 
 func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error) {
 	pkt := &Packet{
-		Host:  d.Host,
-		Node:  d.Node,
-		Tsec:  uint32(ci.Timestamp.Unix()),
-		Tmsec: uint32(ci.Timestamp.Nanosecond() / 1000),
+		Host:   d.Host,
+		NodeID: d.NodeID,
+		NodePW: d.NodePW,
+		Tsec:   uint32(ci.Timestamp.Unix()),
+		Tmsec:  uint32(ci.Timestamp.Nanosecond() / 1000),
 	}
 
 	if len(data) > 42 {
@@ -127,6 +131,20 @@ func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error
 	packet := gopacket.NewPacket(data, d.LayerType, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
 	logp.Debug("layer", "\n%v", packet)
 
+	if greLayer := packet.Layer(layers.LayerTypeGRE); greLayer != nil {
+		gre, ok := greLayer.(*layers.GRE)
+		if !ok {
+			return nil, nil
+		}
+
+		if config.Cfg.Iface.WithErspan {
+			packet = gopacket.NewPacket(gre.Payload[8:], d.LayerType, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
+		} else {
+			packet = gopacket.NewPacket(gre.Payload, d.LayerType, gopacket.DecodeOptions{Lazy: true, NoCopy: true})
+		}
+		logp.Debug("layer", "\nlayer inside GRE\n%v", packet)
+	}
+
 	if dot1qLayer := packet.Layer(layers.LayerTypeDot1Q); dot1qLayer != nil {
 		dot1q, ok := dot1qLayer.(*layers.Dot1Q)
 		if !ok {
@@ -142,7 +160,7 @@ func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error
 			return nil, nil
 		}
 
-		pkt.Version = ip4.Version
+		pkt.Version = 0x02
 		pkt.Protocol = uint8(ip4.Protocol)
 		pkt.SrcIP = ip4.SrcIP
 		pkt.DstIP = ip4.DstIP
@@ -165,7 +183,7 @@ func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error
 				packet, string(packet.ApplicationLayer().Payload()), string(ip4New.Payload[8:]), ip4New.Length,
 			)
 
-			pkt.Version = ip4New.Version
+			pkt.Version = 0x02
 			pkt.Protocol = uint8(ip4New.Protocol)
 			pkt.SrcIP = ip4New.SrcIP
 			pkt.DstIP = ip4New.DstIP
@@ -185,7 +203,7 @@ func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error
 			return nil, nil
 		}
 
-		pkt.Version = ip6.Version
+		pkt.Version = 0x0a
 		pkt.Protocol = uint8(ip6.NextHeader)
 		pkt.SrcIP = ip6.SrcIP
 		pkt.DstIP = ip6.DstIP
@@ -201,6 +219,9 @@ func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error
 			return nil, nil
 		}
 
+		if bytes.Contains(udp.Payload, []byte("sip")) {
+			pkt.ProtoType = 1
+		}
 		pkt.SrcPort = uint16(udp.SrcPort)
 		pkt.DstPort = uint16(udp.DstPort)
 		pkt.Payload = udp.Payload
@@ -209,6 +230,22 @@ func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error
 		d.FlowSrcPort = fmt.Sprintf("%d", udp.SrcPort)
 		d.FlowDstPort = fmt.Sprintf("%d", udp.DstPort)
 
+		if config.Cfg.Mode == "SIPLOG" {
+			if udp.DstPort == 514 {
+				//d.cacheCallID(udp.Payload)
+				pkt.Payload, pkt.CorrelationID, pkt.ProtoType = d.correlateLOG(udp.Payload)
+				if pkt.Payload != nil {
+					return pkt, nil
+				}
+				return nil, nil
+			} else if udp.SrcPort == 2223 || udp.DstPort == 2223 {
+				pkt.Payload, pkt.CorrelationID, pkt.ProtoType = d.correlateNG(udp.Payload)
+				if pkt.Payload != nil {
+					return pkt, nil
+				}
+				return nil, nil
+			}
+		}
 		if config.Cfg.Mode != "SIP" {
 			d.cacheSDPIPPort(udp.Payload)
 			if (udp.Payload[0]&0xc0)>>6 == 2 {
@@ -217,23 +254,13 @@ func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error
 					if pkt.Payload != nil {
 						d.rtcpCount++
 						return pkt, nil
-					} else {
-						d.rtcpFailCount++
-						return nil, nil
 					}
+					d.rtcpFailCount++
+					return nil, nil
 				} else if udp.SrcPort%2 == 0 && udp.DstPort%2 == 0 {
 					logp.Debug("rtp", "\n%v", protos.NewRTP(udp.Payload))
 					pkt.Payload = nil
 					return nil, nil
-				}
-			}
-		}
-		if config.Cfg.Mode == "SIPLOG" {
-			//d.cacheCallID(udp.Payload)
-			if udp.DstPort == 514 {
-				pkt.Payload, pkt.CorrelationID, pkt.ProtoType = d.correlateLOG(udp.Payload)
-				if pkt.Payload != nil {
-					return pkt, nil
 				}
 			}
 		}
@@ -243,17 +270,26 @@ func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error
 			return nil, nil
 		}
 
+		if bytes.Contains(tcp.Payload, []byte("sip")) {
+			pkt.ProtoType = 1
+		}
 		pkt.SrcPort = uint16(tcp.SrcPort)
 		pkt.DstPort = uint16(tcp.DstPort)
 		pkt.Payload = tcp.Payload
 		d.tcpCount++
 
+		if config.Cfg.Mode == "SIPLOG" && tcp.DstPort == 514 {
+			pkt.Payload, pkt.CorrelationID, pkt.ProtoType = d.correlateLOG(tcp.Payload)
+			if pkt.Payload != nil {
+				return pkt, nil
+			}
+			return nil, nil
+		}
 		if config.Cfg.Mode != "SIP" {
 			d.cacheSDPIPPort(tcp.Payload)
 		}
 	}
 
-	// TODO: add more layers like DHCP, NTP
 	if dnsLayer := packet.Layer(layers.LayerTypeDNS); dnsLayer != nil {
 		dns, ok := dnsLayer.(*layers.DNS)
 		if !ok {
@@ -263,18 +299,6 @@ func (d *Decoder) Process(data []byte, ci *gopacket.CaptureInfo) (*Packet, error
 		pkt.ProtoType = 53
 		pkt.Payload = protos.ParseDNS(dns)
 		d.dnsCount++
-	}
-
-	if appLayer := packet.ApplicationLayer(); appLayer != nil {
-		if bytes.Contains(appLayer.Payload(), []byte("sip")) || bytes.Contains(appLayer.Payload(), []byte("SIP")) {
-			pkt.ProtoType = 1
-		}
-		if config.Cfg.Mode == "TLS" {
-			pkt.Payload = protos.NewTLS(appLayer.Payload())
-			if pkt.Payload != nil {
-				pkt.ProtoType = 100
-			}
-		}
 	}
 
 	if pkt.Payload != nil {

@@ -2,6 +2,7 @@ package decoder
 
 import (
 	"bytes"
+	"encoding/json"
 	"strconv"
 
 	"github.com/negbie/heplify/logp"
@@ -141,8 +142,8 @@ func (d *Decoder) correlateRTCP(payload []byte) ([]byte, []byte, byte) {
 }
 
 func (d *Decoder) correlateLOG(payload []byte) ([]byte, []byte, byte) {
+	var callID []byte
 	if posID := bytes.Index(payload, []byte("ID=")); posID > 0 {
-		var callID []byte
 		restID := payload[posID:]
 		// Minimum Call-ID length of "ID=a" = 4
 		if posRestID := bytes.Index(restID, []byte(" ")); posRestID >= 4 {
@@ -153,17 +154,58 @@ func (d *Decoder) correlateLOG(payload []byte) ([]byte, []byte, byte) {
 			logp.Debug("logwarn", "No end or fishy Call-ID in '%s'", string(restID))
 			return nil, nil, 0
 		}
-		/*
-			_, err := d.SIPCache.Get(callID)
-			if err == nil {
-				logp.Debug("log", "Found CallID: %s and Logline: '%s'", string(callID), string(payload))
-				return payload, callID, 100
-			}
-		*/
 		if callID != nil {
 			logp.Debug("log", "Found CallID: %s in Logline: '%s'", string(callID), string(payload))
 			return payload, callID, 100
 
+		}
+	} else if posID := bytes.Index(payload, []byte(": [")); posID > 0 {
+		restID := payload[posID:]
+		if posRestID := bytes.Index(restID, []byte(" port ")); posRestID >= 8 {
+			callID = restID[len(": ["):bytes.Index(restID, []byte(" port "))]
+		} else if posRestID := bytes.Index(restID, []byte("]: ")); posRestID >= 4 {
+			callID = restID[len(": ["):bytes.Index(restID, []byte("]: "))]
+		} else {
+			logp.Debug("logwarn", "No end or fishy Call-ID in '%s'", string(restID))
+			return nil, nil, 0
+		}
+		if len(callID) >= 8 && len(callID) <= 64 {
+			logp.Debug("log", "Found CallID: %s in Logline: '%s'", string(callID), string(payload))
+			return payload, callID, 100
+		}
+	}
+	return nil, nil, 0
+}
+
+func (d *Decoder) correlateNG(payload []byte) ([]byte, []byte, byte) {
+	cookie, rawNG, err := unmarshalNG(payload)
+	if err != nil {
+		logp.Warn("%v", err)
+		return nil, nil, 0
+	}
+	switch rawTypes := rawNG.(type) {
+	case map[string]interface{}:
+		for rawMapKey, rawMapValue := range rawTypes {
+			if rawMapKey == "call-id" {
+				callid := rawMapValue.([]byte)
+				err = d.SIPCache.Set(cookie, callid, 10)
+				if err != nil {
+					logp.Warn("%v", err)
+					return nil, nil, 0
+				}
+			}
+
+			if rawMapKey == "SSRC" {
+				data, err := json.Marshal(&rawMapValue)
+				if err != nil {
+					logp.Warn("%v", err)
+					return nil, nil, 0
+				}
+				if corrID, err := d.SIPCache.Get(cookie); err == nil {
+					logp.Debug("ng", "Found CallID: %s and QOS stats: %s", string(corrID), string(data))
+					return data, corrID, 100
+				}
+			}
 		}
 	}
 	return nil, nil, 0

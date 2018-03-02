@@ -8,9 +8,10 @@ import (
 	"github.com/negbie/heplify/config"
 	"github.com/negbie/heplify/logp"
 	"github.com/negbie/heplify/sniffer"
+	//_ "github.com/mkevac/debugcharts"
 )
 
-const version = "heplify 0.98"
+const version = "heplify 1.0"
 
 func parseFlags() {
 
@@ -35,21 +36,22 @@ func parseFlags() {
 	flag.BoolVar(&ifaceConfig.ReadSpeed, "rs", false, "Maximum pcap read speed. Doesn't use packet timestamps")
 	flag.IntVar(&ifaceConfig.Snaplen, "s", 16384, "Snaplength")
 	flag.StringVar(&ifaceConfig.PortRange, "pr", "5060-5090", "Portrange to capture SIP")
-	flag.IntVar(&ifaceConfig.BufferSizeMb, "b", 64, "Interface buffersize (MB)")
+	flag.BoolVar(&ifaceConfig.WithVlan, "vlan", false, "vlan")
+	flag.BoolVar(&ifaceConfig.WithErspan, "erspan", false, "erspan")
+	flag.IntVar(&ifaceConfig.BufferSizeMb, "b", 32, "Interface buffersize (MB)")
 	flag.StringVar(&logging.Level, "l", "info", "Log level [debug, info, warning, error]")
 	flag.BoolVar(&ifaceConfig.OneAtATime, "o", false, "Read packet for packet")
 	flag.StringVar(&fileRotator.Path, "p", "./", "Log filepath")
 	flag.StringVar(&fileRotator.Name, "n", "heplify.log", "Log filename")
 	flag.BoolVar(&config.Cfg.Bench, "bm", false, "Benchmark for the next 2 minutes and exit")
-	flag.StringVar(&config.Cfg.Mode, "m", "SIPRTCP", "Capture modes [SIPDNS, SIPLOG, SIPRTP, SIPRTCP, SIP, TLS]")
+	flag.StringVar(&config.Cfg.Mode, "m", "SIPRTCP", "Capture modes [SIP, SIPDNS, SIPLOG, SIPRTP, SIPRTCP]")
 	flag.BoolVar(&config.Cfg.Dedup, "dd", true, "Deduplicate packets")
 	flag.StringVar(&config.Cfg.Filter, "fi", "", "Filter interesting packets")
 	flag.StringVar(&config.Cfg.Discard, "di", "", "Discard uninteresting packets")
 	flag.StringVar(&config.Cfg.HepServer, "hs", "127.0.0.1:9060", "HEP UDP server address")
-	flag.StringVar(&config.Cfg.HepTLSProxy, "hp", "", "HEP TLS proxy address")
-	flag.UintVar(&config.Cfg.HepNodeID, "hi", 2002, "HEP Node ID")
-	flag.StringVar(&config.Cfg.NsqdTCPAddress, "ns", "", "NSQ TCP server address")
-	flag.StringVar(&config.Cfg.NsqdTopic, "nt", "Kamailio-Topic", "NSQ publish topic")
+	flag.StringVar(&config.Cfg.HepTLSProxy, "hx", "", "HEP TLS proxy address")
+	flag.StringVar(&config.Cfg.HepNodePW, "hp", "myhep", "HepNodePW")
+	flag.UintVar(&config.Cfg.HepNodeID, "hi", 2002, "HepNodeID")
 	flag.Parse()
 
 	config.Cfg.Iface = &ifaceConfig
@@ -72,14 +74,16 @@ func checkCritErr(err error) {
 func main() {
 	parseFlags()
 
+	/* 	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}() */
+
 	err := logp.Init("heplify", config.Cfg.Logging)
 	checkCritErr(err)
 
-	capture := &sniffer.SnifferSetup{}
-	defer capture.Close()
-
-	err = capture.Init(false, config.Cfg.Mode, config.Cfg.Iface)
+	capture, err := sniffer.New(config.Cfg.Mode, config.Cfg.Iface)
 	checkCritErr(err)
+	defer capture.Close()
 
 	err = capture.Run()
 	checkCritErr(err)

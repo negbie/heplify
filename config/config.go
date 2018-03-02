@@ -7,19 +7,18 @@ import (
 var Cfg Config
 
 type Config struct {
-	Iface          *InterfacesConfig
-	Logging        *logp.Logging
-	Bench          bool
-	Mode           string
-	Dedup          bool
-	Filter         string
-	Discard        string
-	Zip            bool
-	HepServer      string
-	HepTLSProxy    string
-	HepNodeID      uint
-	NsqdTCPAddress string
-	NsqdTopic      string
+	Iface       *InterfacesConfig
+	Logging     *logp.Logging
+	Bench       bool
+	Mode        string
+	Dedup       bool
+	Filter      string
+	Discard     string
+	Zip         bool
+	HepServer   string
+	HepTLSProxy string
+	HepNodePW   string
+	HepNodeID   uint
 }
 
 type InterfacesConfig struct {
@@ -29,6 +28,8 @@ type InterfacesConfig struct {
 	WriteFile    string `config:"write_file"`
 	RotationTime int    `config:"rotation_time"`
 	PortRange    string `config:"port_range"`
+	WithVlan     bool   `config:"with_vlan"`
+	WithErspan   bool   `config:"with_erspan"`
 	Snaplen      int    `config:"snaplen"`
 	BufferSizeMb int    `config:"buffer_size_mb"`
 	ReadSpeed    bool   `config:"top_speed"`
